@@ -15,133 +15,59 @@ use objc::{msg_send, runtime::Object, sel, sel_impl};
 pub type RequestAdapterCallback =
     unsafe extern "C" fn(id: Option<id::AdapterId>, userdata: *mut std::ffi::c_void);
 
-pub fn wgpu_create_surface(raw_handle: raw_window_handle::RawWindowHandle) -> id::SurfaceId {
-    use raw_window_handle::RawWindowHandle as Rwh;
+pub unsafe fn wgpu_create_surface(raw_handle: &impl raw_window_handle::HasRawWindowHandle) -> id::SurfaceId {
+    use hal::Instance;
 
     let instance = &GLOBAL.instance;
-    let surface = match raw_handle {
-        #[cfg(target_os = "ios")]
-        Rwh::IOS(h) => core::instance::Surface {
-            #[cfg(feature = "vulkan-portability")]
-            vulkan: None,
-            metal: instance
-                .metal
-                .create_surface_from_uiview(h.ui_view, cfg!(debug_assertions)),
-        },
-        #[cfg(target_os = "macos")]
-        Rwh::MacOS(h) => {
-            let ns_view = if h.ns_view.is_null() {
-                let ns_window = h.ns_window as *mut Object;
-                unsafe { msg_send![ns_window, contentView] }
-            } else {
-                h.ns_view
-            };
-            core::instance::Surface {
-                #[cfg(feature = "vulkan-portability")]
-                vulkan: instance
-                    .vulkan
-                    .as_ref()
-                    .map(|inst| inst.create_surface_from_ns_view(ns_view)),
-                metal: instance
-                    .metal
-                    .create_surface_from_nsview(ns_view, cfg!(debug_assertions)),
-            }
-        }
-        #[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
-        Rwh::Xlib(h) => core::instance::Surface {
-            vulkan: instance
-                .vulkan
-                .as_ref()
-                .map(|inst| inst.create_surface_from_xlib(h.display as _, h.window as _)),
-        },
-        #[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
-        Rwh::Wayland(h) => core::instance::Surface {
-            vulkan: instance
-                .vulkan
-                .as_ref()
-                .map(|inst| inst.create_surface_from_wayland(h.display, h.surface)),
-        },
-        #[cfg(windows)]
-        Rwh::Windows(h) => core::instance::Surface {
-            vulkan: instance
-                .vulkan
-                .as_ref()
-                .map(|inst| inst.create_surface_from_hwnd(std::ptr::null_mut(), h.hwnd)),
-            dx12: instance
-                .dx12
-                .as_ref()
-                .map(|inst| inst.create_surface_from_hwnd(h.hwnd)),
-            dx11: instance.dx11.create_surface_from_hwnd(h.hwnd),
-        },
-        _ => panic!("Unsupported window handle"),
+    #[cfg(target_os = "ios")]
+    let surface = core::instance::Surface {
+        #[cfg(feature = "vulkan-portability")]
+        vulkan: None,
+        metal: instance
+            .metal
+            .create_surface(raw_handle)
+            .unwrap(),
+    };
+    #[cfg(target_os = "macos")]
+    let surface = core::instance::Surface {
+        #[cfg(feature = "vulkan-portability")]
+        vulkan: instance
+            .vulkan
+            .as_ref()
+            .map(|inst| inst.create_surface(raw_handle).ok())
+            .flatten(),
+        metal: instance
+            .metal
+            .create_surface(raw_handle)
+            .unwrap(),
+    };
+    #[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
+    let surface = core::instance::Surface {
+        vulkan: instance
+            .vulkan
+            .as_ref()
+            .map(|inst| inst.create_surface(raw_handle).ok())
+            .flatten(),
+    };
+    #[cfg(windows)]
+    let surface = core::instance::Surface {
+        vulkan: instance
+            .vulkan
+            .as_ref()
+            .map(|inst| inst.create_surface(raw_handle).ok())
+            .flatten(),
+        dx12: instance
+            .dx12
+            .as_ref()
+            .map(|inst| inst.create_surface(raw_handle).ok())
+            .flatten(),
+        dx11: instance.dx11.create_surface(raw_handle).unwrap(),
     };
 
     let mut token = Token::root();
     GLOBAL
         .surfaces
         .register_identity(PhantomData, surface, &mut token)
-}
-
-#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
-#[no_mangle]
-pub extern "C" fn wgpu_create_surface_from_xlib(
-    display: *mut *const std::ffi::c_void,
-    window: libc::c_ulong,
-) -> id::SurfaceId {
-    use raw_window_handle::unix::XlibHandle;
-    wgpu_create_surface(raw_window_handle::RawWindowHandle::Xlib(XlibHandle {
-        window,
-        display: display as *mut _,
-        ..XlibHandle::empty()
-    }))
-}
-
-#[cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))]
-#[no_mangle]
-pub extern "C" fn wgpu_create_surface_from_wayland(
-    surface: *mut std::ffi::c_void,
-    display: *mut std::ffi::c_void,
-) -> id::SurfaceId {
-    use raw_window_handle::unix::WaylandHandle;
-    wgpu_create_surface(raw_window_handle::RawWindowHandle::Wayland(WaylandHandle {
-        surface,
-        display,
-        ..WaylandHandle::empty()
-    }))
-}
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-#[no_mangle]
-pub extern "C" fn wgpu_create_surface_from_metal_layer(
-    layer: *mut std::ffi::c_void,
-) -> id::SurfaceId {
-    let surface = core::instance::Surface {
-        #[cfg(feature = "vulkan-portability")]
-        vulkan: None, //TODO: currently requires `NSView`
-        metal: GLOBAL
-            .instance
-            .metal
-            .create_surface_from_layer(layer as *mut _, cfg!(debug_assertions)),
-    };
-
-    GLOBAL
-        .surfaces
-        .register_identity(PhantomData, surface, &mut Token::root())
-}
-
-#[cfg(windows)]
-#[no_mangle]
-pub extern "C" fn wgpu_create_surface_from_windows_hwnd(
-    _hinstance: *mut std::ffi::c_void,
-    hwnd: *mut std::ffi::c_void,
-) -> id::SurfaceId {
-    use raw_window_handle::windows::WindowsHandle;
-    wgpu_create_surface(raw_window_handle::RawWindowHandle::Windows(
-        raw_window_handle::windows::WindowsHandle {
-            hwnd,
-            ..WindowsHandle::empty()
-        },
-    ))
 }
 
 pub fn wgpu_enumerate_adapters(mask: BackendBit) -> Vec<id::AdapterId> {

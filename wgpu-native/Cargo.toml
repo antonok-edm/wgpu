@@ -36,6 +36,7 @@ lazy_static = "1.1"
 parking_lot = "0.10"
 raw-window-handle = "0.3"
 libc = {version="0.2", features=[]}
+hal = { package = "gfx-hal", version = "0.5" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2.7"
